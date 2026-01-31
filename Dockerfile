@@ -11,4 +11,4 @@ COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Start the bot
-CMD ["python3", "-m", "NoxxNetwork"]
+CMD ["python3", "-m", "main.py"]
