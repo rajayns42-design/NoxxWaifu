@@ -1,138 +1,103 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CommandHandler, CallbackContext, CallbackQueryHandler
 from itertools import groupby
 import math
-from html import escape 
 import random
-
-from telegram.ext import CommandHandler, CallbackContext, CallbackQueryHandler
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
+from html import escape 
 from NoxxNetwork import collection, user_collection, application
 
 async def harem(update: Update, context: CallbackContext, page=0) -> None:
+    # Query ya Message handle karne ke liye
+    is_callback = update.callback_query is not None
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
 
     user = await user_collection.find_one({'id': user_id})
-    if not user:
-        if update.message:
-            await update.message.reply_text('You Have Not Guessed any Characters Yet..')
+    if not user or not user.get('characters'):
+        msg = '<b>You Have Not Guessed any Characters Yet..</b>'
+        if is_callback:
+            await update.callback_query.answer("Empty Harem!", show_alert=True)
         else:
-            await update.callback_query.edit_message_text('You Have Not Guessed any Characters Yet..')
+            await update.message.reply_text(msg, parse_mode='HTML')
         return
 
-    characters = sorted(user['characters'], key=lambda x: (x['anime'], x['id']))
+    # Characters sorting aur grouping
+    all_characters = user['characters']
+    all_characters.sort(key=lambda x: (x.get('anime', 'Unknown'), x.get('id', '')))
 
-    character_counts = {k: len(list(v)) for k, v in groupby(characters, key=lambda x: x['id'])}
-
+    # Count of each character
+    character_counts = {k: len(list(v)) for k, v in groupby(all_characters, key=lambda x: x['id'])}
     
-    unique_characters = list({character['id']: character for character in characters}.values())
-
+    # Unique list for pagination
+    unique_characters = list({c['id']: c for c in all_characters}.values())
     
-    total_pages = math.ceil(len(unique_characters) / 15)  
+    total_pages = math.ceil(len(unique_characters) / 15)
+    if page < 0 or page >= total_pages: page = 0  
 
-    if page < 0 or page >= total_pages:
-        page = 0  
+    harem_message = f"<b>{escape(update.effective_user.first_name)}'s Harem</b>\n"
+    harem_message += f"✨ <b>Total Characters:</b> {len(all_characters)}\n"
+    harem_message += f"📖 <b>Page:</b> {page+1}/{total_pages}\n"
+    harem_message += "━━━━━━━━━━━━━━━━━━━━\n"
 
-    harem_message = f"<b>{escape(update.effective_user.first_name)}'s Harem - Page {page+1}/{total_pages}</b>\n"
-
+    # Current page characters
+    current_chars = unique_characters[page*15:(page+1)*15]
     
-    current_characters = unique_characters[page*15:(page+1)*15]
+    # Group by anime
+    for anime, group in groupby(current_chars, key=lambda x: x.get('anime', 'Unknown')):
+        # Group list conversion to avoid iterator issues
+        group_list = list(group)
+        total_in_anime = await collection.count_documents({"anime": anime})
+        harem_message += f'\n🎬 <b>{anime}</b> ({len(group_list)}/{total_in_anime})\n'
+        
+        for char in group_list:
+            count = character_counts.get(char['id'], 1)
+            harem_message += f'├ {char["id"]} {char["name"]} ×{count}\n'
 
-    
-    current_grouped_characters = {k: list(v) for k, v in groupby(current_characters, key=lambda x: x['anime'])}
-
-    for anime, characters in current_grouped_characters.items():
-        harem_message += f'\n<b>{anime} {len(characters)}/{await collection.count_documents({"anime": anime})}</b>\n'
-
-        for character in characters:
-            
-            count = character_counts[character['id']]  
-            harem_message += f'{character["id"]} {character["name"]} ×{count}\n'
-
-
-    total_count = len(user['characters'])
-    
-    keyboard = [[InlineKeyboardButton(f"See Collection ({total_count})", switch_inline_query_current_chat=f"collection.{user_id}")]]
-
+    # Keyboard
+    keyboard = [[InlineKeyboardButton(f"See Collection ({len(all_characters)})", switch_inline_query_current_chat=f"collection.{user_id}")]]
 
     if total_pages > 1:
-        
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"harem:{page-1}:{user_id}"))
-        if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"harem:{page+1}:{user_id}"))
-        keyboard.append(nav_buttons)
+        nav = []
+        if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"harem:{page-1}:{user_id}"))
+        if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"harem:{page+1}:{user_id}"))
+        keyboard.append(nav)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if 'favorites' in user and user['favorites']:
-        
-        fav_character_id = user['favorites'][0]
-        fav_character = next((c for c in user['characters'] if c['id'] == fav_character_id), None)
+    # Image logic (Fav or Random)
+    fav_id = user.get('favorites', [None])[0]
+    fav_char = next((c for c in all_characters if c['id'] == fav_id), None) if fav_id else None
+    display_char = fav_char if fav_char else random.choice(all_characters)
+    img_url = display_char.get('img_url')
 
-        if fav_character and 'img_url' in fav_character:
-            if update.message:
-                await update.message.reply_photo(photo=fav_character['img_url'], parse_mode='HTML', caption=harem_message, reply_markup=reply_markup)
-            else:
-                
-                if update.callback_query.message.caption != harem_message:
-                    await update.callback_query.edit_message_caption(caption=harem_message, reply_markup=reply_markup, parse_mode='HTML')
+    try:
+        if is_callback:
+            # Sirf caption update karein taaki image baar-baar load na ho
+            await update.callback_query.edit_message_caption(
+                caption=harem_message, 
+                reply_markup=reply_markup, 
+                parse_mode='HTML'
+            )
         else:
-            if update.message:
-                await update.message.reply_text(harem_message, parse_mode='HTML', reply_markup=reply_markup)
+            if img_url:
+                await update.message.reply_photo(photo=img_url, caption=harem_message, reply_markup=reply_markup, parse_mode='HTML')
             else:
-                
-                if update.callback_query.message.text != harem_message:
-                    await update.callback_query.edit_message_text(harem_message, parse_mode='HTML', reply_markup=reply_markup)
-    else:
-        
-        if user['characters']:
-        
-            random_character = random.choice(user['characters'])
-
-            if 'img_url' in random_character:
-                if update.message:
-                    await update.message.reply_photo(photo=random_character['img_url'], parse_mode='HTML', caption=harem_message, reply_markup=reply_markup)
-                else:
-                    
-                    if update.callback_query.message.caption != harem_message:
-                        await update.callback_query.edit_message_caption(caption=harem_message, reply_markup=reply_markup, parse_mode='HTML')
-            else:
-                if update.message:
-                    await update.message.reply_text(harem_message, parse_mode='HTML', reply_markup=reply_markup)
-                else:
-                
-                    if update.callback_query.message.text != harem_message:
-                        await update.callback_query.edit_message_text(harem_message, parse_mode='HTML', reply_markup=reply_markup)
-        else:
-            if update.message:
-                await update.message.reply_text("Your List is Empty :)")
-
+                await update.message.reply_text(harem_message, reply_markup=reply_markup, parse_mode='HTML')
+    except Exception as e:
+        # Agar caption same ho toh Telegram error deta hai, use ignore karein
+        if "Message is not modified" not in str(e):
+            print(f"Harem Error: {e}")
 
 async def harem_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
-    data = query.data
-
-
-    _, page, user_id = data.split(':')
-
-
-    page = int(page)
-    user_id = int(user_id)
-
+    _, page, user_id = query.data.split(':')
     
-    if query.from_user.id != user_id:
-        await query.answer("its Not Your Harem", show_alert=True)
+    if query.from_user.id != int(user_id):
+        await query.answer("❌ This is not your harem!", show_alert=True)
         return
 
-    
-    await harem(update, context, page)
+    await harem(update, context, page=int(page))
 
-
-
-
-application.add_handler(CommandHandler(["harem", "collection"], harem,block=False))
-harem_handler = CallbackQueryHandler(harem_callback, pattern='^harem', block=False)
-application.add_handler(harem_handler)
-    
+# Handlers
+application.add_handler(CommandHandler(["harem", "collection"], harem, block=False))
+application.add_handler(CallbackQueryHandler(harem_callback, pattern='^harem:', block=False))
