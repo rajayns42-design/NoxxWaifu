@@ -1,1 +1,1 @@
-worker: python3 -m NoxxNetwork
+worker: python main.py
